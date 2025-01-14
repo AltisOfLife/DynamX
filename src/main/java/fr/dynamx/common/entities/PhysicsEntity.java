@@ -204,6 +204,11 @@ public abstract class PhysicsEntity<T extends AbstractEntityPhysicsHandler<?, ?>
     @Override
     public void readSpawnData(ByteBuf additionalData) {
         physicsRotation.set(DynamXUtils.readQuaternion(additionalData));
+        if (!initEntityProperties()) {
+            setDead();
+            return;
+        }
+        initialized = EnumEntityInitState.ONLY_ENTITY_PROPERTIES;
     }
 
     @Override

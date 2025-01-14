@@ -9,9 +9,11 @@ import fr.dynamx.api.entities.modules.ModuleListBuilder;
 import fr.dynamx.api.network.sync.SynchronizedEntityVariableRegistry;
 import fr.dynamx.common.physics.entities.AbstractEntityPhysicsHandler;
 import fr.dynamx.common.physics.entities.PackEntityPhysicsHandler;
+import io.netty.buffer.ByteBuf;
 import net.minecraft.entity.Entity;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.world.World;
+import net.minecraftforge.fml.common.registry.IEntityAdditionalSpawnData;
 import net.minecraftforge.fml.relauncher.Side;
 
 import javax.annotation.Nullable;
@@ -182,6 +184,36 @@ public abstract class ModularPhysicsEntity<T extends AbstractEntityPhysicsHandle
     protected void writeEntityToNBT(NBTTagCompound tagCompound) {
         super.writeEntityToNBT(tagCompound);
         moduleList.forEach(m -> m.writeToNBT(tagCompound));
+    }
+
+    @Override
+    public void writeSpawnData(ByteBuf buffer) {
+        super.writeSpawnData(buffer);
+        buffer.writeInt(moduleList.size());
+        moduleList.forEach(m -> {
+            if (m instanceof IEntityAdditionalSpawnData) {
+                ((IEntityAdditionalSpawnData) m).writeSpawnData(buffer);
+            }
+        });
+    }
+
+    @Override
+    public void readSpawnData(ByteBuf additionalData) {
+        super.readSpawnData(additionalData);
+        int size = additionalData.readInt();
+        if(size == 0) {
+            return;
+        }
+        int i = 0;
+        for (IPhysicsModule<?> m : moduleList) {
+            if (i >= size) {
+                return;
+            }
+            if (m instanceof IEntityAdditionalSpawnData) {
+                ((IEntityAdditionalSpawnData) m).readSpawnData(additionalData);
+                i++;
+            }
+        }
     }
 
     @Override

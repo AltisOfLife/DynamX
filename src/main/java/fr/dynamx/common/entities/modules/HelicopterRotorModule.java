@@ -4,13 +4,15 @@ import fr.dynamx.api.entities.modules.IPhysicsModule;
 import fr.dynamx.common.entities.BaseVehicleEntity;
 import fr.dynamx.common.entities.modules.engines.HelicopterEngineModule;
 import fr.dynamx.common.physics.entities.BaseVehiclePhysicsHandler;
+import io.netty.buffer.ByteBuf;
 import lombok.Getter;
 import net.minecraft.util.EnumParticleTypes;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
+import net.minecraftforge.fml.common.registry.IEntityAdditionalSpawnData;
 import net.minecraftforge.fml.relauncher.Side;
 
-public class HelicopterRotorModule implements IPhysicsModule<BaseVehiclePhysicsHandler<?>>, IPhysicsModule.IEntityUpdateListener {
+public class HelicopterRotorModule implements IPhysicsModule<BaseVehiclePhysicsHandler<?>>, IPhysicsModule.IEntityUpdateListener, IEntityAdditionalSpawnData {
     protected final BaseVehicleEntity<? extends BaseVehiclePhysicsHandler<?>> entity;
     private HelicopterEngineModule engine;
 
@@ -67,5 +69,16 @@ public class HelicopterRotorModule implements IPhysicsModule<BaseVehiclePhysicsH
                 }
             }
         }
+    }
+
+    @Override
+    public void writeSpawnData(ByteBuf buffer) {
+        // curPower isn't computed on server side
+        buffer.writeFloat(engine != null ? engine.getPower() : 0);
+    }
+
+    @Override
+    public void readSpawnData(ByteBuf additionalData) {
+        curPower = additionalData.readFloat();
     }
 }
