@@ -198,12 +198,14 @@ public abstract class PhysicsEntity<T extends AbstractEntityPhysicsHandler<?, ?>
 
     @Override
     public void writeSpawnData(ByteBuf buffer) {
-        DynamXUtils.writeQuaternion(buffer, physicsRotation);
     }
 
     @Override
     public void readSpawnData(ByteBuf additionalData) {
-        physicsRotation.set(DynamXUtils.readQuaternion(additionalData));
+        // Fix: since initEntityProperties was added here, checkEntityInit wasn't called anymore on client, and so physicsRotation wasn't correct
+        if (physicsRotation.equals(Quaternion.IDENTITY)) {
+            physicsRotation.set(DynamXGeometry.rotationYawToQuaternion(rotationYaw));
+        }
         if (!initEntityProperties()) {
             setDead();
             return;
@@ -242,7 +244,7 @@ public abstract class PhysicsEntity<T extends AbstractEntityPhysicsHandler<?, ?>
             if (physicsHandler.getPhysicsState() == EntityPhysicsState.FROZEN) {
                 physicsHandler.setPhysicsState(EntityPhysicsState.UNFREEZE);
             } else {
-                this.physicsHandler.setPhysicsState(EntityPhysicsState.ENABLE);
+                physicsHandler.setPhysicsState(EntityPhysicsState.ENABLE);
             }
             if (isRegistered == EnumEntityPhysicsRegistryState.NOT_REGISTERED) {
                 DynamXContext.getPhysicsWorld(world).addBulletEntity(this);
