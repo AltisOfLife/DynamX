@@ -90,6 +90,18 @@ public abstract class DxModelData {
 
     public abstract int[] getMeshIndices(String objectName);
 
+    /**
+     * Coordonnées de texture des sommets de l'objet, dans le même ordre que
+     * {@link DxModelData#getVerticesPos(String)} rend leurs positions : deux floats par sommet, dans l'espace où
+     * le renderer échantillonne la texture et non celui du fichier du modèle. Sert à lire la couleur d'une lampe
+     * sur la texture de sa lumière, voir fr.dynamx.client.renders.lights.LightColorResolver.
+     *
+     * @return Les coordonnées de texture des sommets, vide si le modèle n'en porte pas
+     */
+    public float[] getVerticesTexCoords(String objectName) {
+        return new float[0];
+    }
+
     public int[] getAllMeshIndices() {
         return getMeshNames().stream()
                 .filter(meshName -> !meshName.equalsIgnoreCase("main"))
@@ -107,6 +119,18 @@ public abstract class DxModelData {
     public abstract Vector3f getMaxOfModel(@Nullable Vector3f result);
 
     public abstract List<String> getMeshNames();
+
+    /**
+     * Transformation appliquée par le renderer au mesh de l'objet avant de le dessiner. Les sommets d'un obj
+     * sont déjà dans l'espace du modèle ; ceux d'un gltf sont dans l'espace de leur propre noeud, qui porte une
+     * translation, une rotation et une échelle, et qui peut lui-même dépendre d'autres noeuds.
+     *
+     * @return La matrice 4x4 en colonnes, ou null si les sommets sont déjà dans l'espace du modèle (tout obj)
+     */
+    @Nullable
+    public float[] getMeshTransform(String objectName) {
+        return null;
+    }
 
     public Vector3f getCenter(@Nullable Vector3f result) {
         Vector3f min = getMinOfModel(Vector3fPool.get());

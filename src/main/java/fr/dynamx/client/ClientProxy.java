@@ -10,6 +10,7 @@ import fr.dynamx.client.handlers.ClientEventHandler;
 import fr.dynamx.client.handlers.KeyHandler;
 import fr.dynamx.client.network.ClientPhysicsEntitySynchronizer;
 import fr.dynamx.client.renders.RenderProp;
+import fr.dynamx.client.renders.lights.LightColorResolver;
 import fr.dynamx.client.renders.RenderRagdoll;
 import fr.dynamx.client.renders.RenderSeatEntity;
 import fr.dynamx.client.renders.TESRDynamXBlock;
@@ -169,6 +170,8 @@ public class ClientProxy extends CommonProxy implements ISelectiveResourceReload
     public void onResourceManagerReload(IResourceManager resourceManager, Predicate<IResourceType> resourcePredicate) {
         if (resourcePredicate.test(VanillaResourceType.MODELS)) {
             DynamXRenderUtils.initGlMeshes();
+            // Les couleurs sont lues sur les textures des lumières, qui ont peut-être changé
+            LightColorResolver.clearCache();
             DynamXLoadingTasks.reload(DynamXLoadingTasks.TaskContext.CLIENT, DynamXLoadingTasks.MODEL).thenAccept(empty -> {
                 if (Minecraft.getMinecraft().player != null && DynamXErrorManager.getErrorManager().hasErrors(DynamXErrorManager.MODEL_ERRORS))
                     Minecraft.getMinecraft().player.sendMessage(new TextComponentTranslation("dynamx.reload.models.errors"));

@@ -40,17 +40,18 @@ public class ObjModelData extends DxModelData {
 
     @Override
     public float[] getVerticesPos(String objectName) {
-        float[] pos = new float[0];
-        for (ObjObjectData objObject : objObjects) {
-            if (!objObject.getName().toLowerCase().contains(objectName.toLowerCase())) {
-                continue;
-            }
-            pos = new float[objObject.getVertices().length * 3];
-            for (int i = 0; i < objObject.getVertices().length; i++) {
-                pos[i * 3] = objObject.getVertices()[i].getPos().x;
-                pos[i * 3 + 1] = objObject.getVertices()[i].getPos().y;
-                pos[i * 3 + 2] = objObject.getVertices()[i].getPos().z;
-            }
+        // Apparié sur le nom complet, comme getObjObject, getMeshMin et le renderer : sur une partie du nom, les
+        // sommets d'un objet voisin sont renvoyés dès qu'un nom contient l'autre ("rear_light" et
+        // "rear_light_glass")
+        ObjObjectData objObject = getObjObject(objectName);
+        if (objObject == null || objObject.getVertices() == null) {
+            return new float[0];
+        }
+        float[] pos = new float[objObject.getVertices().length * 3];
+        for (int i = 0; i < objObject.getVertices().length; i++) {
+            pos[i * 3] = objObject.getVertices()[i].getPos().x;
+            pos[i * 3 + 1] = objObject.getVertices()[i].getPos().y;
+            pos[i * 3 + 2] = objObject.getVertices()[i].getPos().z;
         }
         return pos;
     }
@@ -58,6 +59,22 @@ public class ObjModelData extends DxModelData {
     @Override
     public int[] getMeshIndices(String objectName) {
         return getObjObject(objectName).getIndices();
+    }
+
+    /**
+     * {@inheritDoc} <br>
+     * Reprises de {@link ObjObjectData#getTextureCoords()}, le tableau même avec lequel le renderer échantillonne
+     * la texture : v y est déjà inversé, un obj l'écrivant depuis le bas de la texture.
+     */
+    @Override
+    public float[] getVerticesTexCoords(String objectName) {
+        // Apparié sur le nom complet, comme getVerticesPos : les coordonnées doivent être celles des sommets dont
+        // il rend les positions
+        ObjObjectData objObject = getObjObject(objectName);
+        if (objObject == null || objObject.getVertices() == null) {
+            return new float[0];
+        }
+        return objObject.getTextureCoords();
     }
 
     @Override

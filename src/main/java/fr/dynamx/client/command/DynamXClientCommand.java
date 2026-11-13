@@ -27,6 +27,7 @@ public class DynamXClientCommand extends CommandBase {
         addCommand(new CmdUdpTest());
         addCommand(new CmdPrintVehicleInfos());
         addCommand(new CmdPoolStates());
+        addCommand(new CmdLightFx());
 
         //TODO INVESTIGATE ON DISABLE MAP POOL ON CLIENT THEN REMOVE
         addCommand(new ISubCommand() {

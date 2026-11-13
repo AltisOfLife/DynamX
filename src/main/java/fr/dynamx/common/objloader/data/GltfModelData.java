@@ -93,6 +93,47 @@ public class GltfModelData extends DxModelData {
         return indices;
     }
 
+    /**
+     * {@inheritDoc} <br>
+     * Lues dans l'attribut TEXCOORD_0 des primitives du noeud, dans le même ordre que POSITION l'est par
+     * {@link GltfModelData#getVerticesPos(String)}, et prises telles quelles (un gltf les écrit déjà dans
+     * l'espace d'échantillonnage). Rien n'est renvoyé si une primitive ne les porte pas en floats : elle
+     * décalerait toutes les coordonnées suivantes d'un sommet.
+     */
+    @Override
+    public float[] getVerticesTexCoords(String objectName) {
+        String objectNameLower = objectName.toLowerCase();
+        List<float[]> texCoordList = new ArrayList<>();
+        int size = 0;
+
+        for (NodeModel nodeModel : getNodeModels()) {
+            if (!nodeModel.getName().equalsIgnoreCase(objectNameLower)) {
+                continue;
+            }
+            for (MeshModel meshModel : nodeModel.getMeshModels()) {
+                for (MeshPrimitiveModel meshPrimitiveModel : meshModel.getMeshPrimitiveModels()) {
+                    AccessorModel accessorModel = meshPrimitiveModel.getAttributes().get("TEXCOORD_0");
+                    if (accessorModel == null || accessorModel.getComponentType() != 5126) {
+                        return new float[0];
+                    }
+                    FloatBuffer floatBuffer = accessorModel.getBufferViewModel().getBufferViewData().asFloatBuffer();
+                    float[] texCoords = new float[floatBuffer.limit()];
+                    size += floatBuffer.limit();
+                    floatBuffer.get(texCoords);
+                    texCoordList.add(texCoords);
+                }
+            }
+            break;
+        }
+        float[] texCoords = new float[size];
+        int currentPosition = 0;
+        for (float[] read : texCoordList) {
+            System.arraycopy(read, 0, texCoords, currentPosition, read.length);
+            currentPosition += read.length;
+        }
+        return texCoords;
+    }
+
     @Override
     public Vector3f getMeshMin(String name, @Nullable Vector3f result) {
         float[] verticesPos = getVerticesPos(name);
@@ -187,5 +228,25 @@ public class GltfModelData extends DxModelData {
     @Override
     public List<String> getMeshNames() {
         return getNodeModels().stream().map(n -> n.getName().toLowerCase()).collect(Collectors.toList());
+    }
+
+    /**
+     * {@inheritDoc} <br>
+     * Les sommets d'un gltf sont stockés dans l'espace de leur noeud : c'est la matrice sous laquelle le
+     * renderer les dessine, les transformations locales du noeud et de tous ses parents combinées.
+     *
+     * @see com.modularmods.mcgltf.dynamx.RenderedGltfModel#findGlobalTransform(NodeModel)
+     */
+    @Nullable
+    @Override
+    public float[] getMeshTransform(String objectName) {
+        // Apparié comme les sommets eux-mêmes (voir getVerticesPos) : la transformation doit être celle du noeud
+        // dont ils ont été lus
+        for (NodeModel nodeModel : getNodeModels()) {
+            if (nodeModel.getName().equalsIgnoreCase(objectName)) {
+                return nodeModel.computeGlobalTransform(null);
+            }
+        }
+        return null;
     }
 }

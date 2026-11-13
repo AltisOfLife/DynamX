@@ -33,6 +33,15 @@ public class DynamXConfig
 
     public static boolean disableItemTooltips;
 
+    //Lights
+    public static boolean enableLightFx = true;
+    public static float lightFxIntensity = 1;
+    public static int lightFxMaxDistance = 64;
+    public static int lightFxMaxLights = 64;
+    public static boolean lightFxBeaconsOnly;
+    public static boolean lightFxOwnVehicleOnly;
+    public static boolean lightFxRotatingBeaconSweep = true;
+
     public static List<VerticalChunkPos> chunkDebugPoses;
     public static boolean enableDebugTerrainManager, ignoreDangerousTerrainErrors;
 
@@ -66,6 +75,15 @@ public class DynamXConfig
         // Visuals
         maxZoomOut = cfg.getInt("MaxZoomOut", "Visuals", 20, 0, 200, "Max de-zoom in F5 view");
         disableItemTooltips = cfg.getBoolean("DisableItemTooltips", "Visuals", false, "Disables item tooltips showing pack information.");
+
+        // Effets de lumière (côté client uniquement)
+        enableLightFx = cfg.getBoolean("EnableLightEffects", "LightEffects", true, "Renders the glow of the lit lights, the light they cast on the ground, and the sweeping beams of the beacons. Can be toggled in game with /client_dynamx lightfx");
+        lightFxIntensity = (float) cfg.get("LightEffects", "Intensity", 1d, "Brightness of the light effects. 0 disables them", 0d, 3d).getDouble();
+        lightFxMaxDistance = cfg.getInt("MaxDistance", "LightEffects", 64, 8, 256, "Maximum distance, in blocks, at which the light effects are rendered. Also scales how far from the camera they keep their detail");
+        lightFxMaxLights = cfg.getInt("MaxLights", "LightEffects", 64, 1, 256, "Maximum amount of lights rendered at the same time. The closest ones are kept, and the last ones that fit are faded out. Has an impact on game performance");
+        lightFxBeaconsOnly = cfg.getBoolean("BeaconsOnly", "LightEffects", false, "Only gives the light effects to the beacons (the flashing and rotating lights), and not to the headlights. The cheapest setting that still shows the lights of the emergency vehicles");
+        lightFxOwnVehicleOnly = cfg.getBoolean("OwnVehicleOnly", "LightEffects", false, "Only gives the light effects to the vehicle you are riding, and to no other vehicle or block. On foot, nothing gets them at all. The lightest setting of all: whatever happens around you, the effects then cost what one vehicle costs");
+        lightFxRotatingBeaconSweep = cfg.getBoolean("RotatingBeaconSweep", "LightEffects", true, "Lets the beacons that turn on themselves sweep the light they cast around them: the beams they throw out and the two bright lobes their mirrors make as they come past the camera. Turn it off to leave those beacons with the glow of their lamp alone, which is cheaper and steadier to look at");
 
         // Physics
         allowPlayersToMoveObjects = cfg.getBoolean("AllowPlayersToMoveObjects", "Physics", true, "Allow player in survival to move ");
@@ -113,6 +131,90 @@ public class DynamXConfig
         masterSoundVolume = (float) cfg.get("Sounds", "Volume", 0.8f, "The volume of DynamX sounds (engines...)").getDouble();
         maxSounds = cfg.get("Sounds", "MaxSounds", 8, "The maximum amount of sounds DynamX can play at the same time").getInt();
         cfg.save();
+    }
+
+    public static void setEnableLightFx(boolean enabled) {
+        enableLightFx = enabled;
+        saveLightFxProperty("EnableLightEffects", enabled);
+    }
+
+    public static void setLightFxIntensity(float intensity) {
+        lightFxIntensity = intensity;
+        saveLightFxProperty("Intensity", intensity);
+    }
+
+    public static void setLightFxBeaconsOnly(boolean beaconsOnly) {
+        lightFxBeaconsOnly = beaconsOnly;
+        saveLightFxProperty("BeaconsOnly", beaconsOnly);
+    }
+
+    public static void setLightFxOwnVehicleOnly(boolean ownVehicleOnly) {
+        lightFxOwnVehicleOnly = ownVehicleOnly;
+        saveLightFxProperty("OwnVehicleOnly", ownVehicleOnly);
+    }
+
+    public static void setLightFxRotatingBeaconSweep(boolean sweep) {
+        lightFxRotatingBeaconSweep = sweep;
+        saveLightFxProperty("RotatingBeaconSweep", sweep);
+    }
+
+    public static void setLightFxMaxDistance(int maxDistance) {
+        lightFxMaxDistance = maxDistance;
+        saveLightFxProperty("MaxDistance", maxDistance);
+    }
+
+    public static void setLightFxMaxLights(int maxLights) {
+        lightFxMaxLights = maxLights;
+        saveLightFxProperty("MaxLights", maxLights);
+    }
+
+    /**
+     * Applique tous les réglages des effets d'un coup, sauvegardés en une seule écriture
+     *
+     * @see LightFxPreset
+     */
+    public static void setLightFxSettings(boolean enabled, int maxDistance, int maxLights, boolean beaconsOnly,
+                                          boolean ownVehicleOnly) {
+        enableLightFx = enabled;
+        lightFxMaxDistance = maxDistance;
+        lightFxMaxLights = maxLights;
+        lightFxBeaconsOnly = beaconsOnly;
+        lightFxOwnVehicleOnly = ownVehicleOnly;
+        putLightFxProperty("EnableLightEffects", enabled);
+        putLightFxProperty("MaxDistance", maxDistance);
+        putLightFxProperty("MaxLights", maxLights);
+        putLightFxProperty("BeaconsOnly", beaconsOnly);
+        putLightFxProperty("OwnVehicleOnly", ownVehicleOnly);
+        saveConfig();
+    }
+
+    private static void saveLightFxProperty(String key, Object value) {
+        putLightFxProperty(key, value);
+        saveConfig();
+    }
+
+    /**
+     * Écrit un réglage dans la config sans sauvegarder le fichier : un préréglage en change cinq, et sauvegarder
+     * à chacun réécrirait le fichier cinq fois
+     */
+    private static void putLightFxProperty(String key, Object value) {
+        if (cfg == null) {
+            // Config pas encore chargée, rien à écrire
+            return;
+        }
+        if (value instanceof Boolean) {
+            cfg.get("LightEffects", key, (Boolean) value).set((Boolean) value);
+        } else if (value instanceof Integer) {
+            cfg.get("LightEffects", key, (Integer) value).set((Integer) value);
+        } else {
+            cfg.get("LightEffects", key, ((Number) value).doubleValue()).set(((Number) value).doubleValue());
+        }
+    }
+
+    private static void saveConfig() {
+        if (cfg != null) {
+            cfg.save();
+        }
     }
 
     public static void setMasterSoundVolume(float volume) {

@@ -15,6 +15,7 @@ import fr.dynamx.api.contentpack.registry.*;
 import fr.dynamx.api.dxmodel.IModelTextureVariantsSupplier;
 import fr.dynamx.api.entities.modules.ModuleListBuilder;
 import fr.dynamx.client.handlers.ClientEventHandler;
+import fr.dynamx.client.renders.lights.DynamXLightFx;
 import fr.dynamx.client.renders.model.texture.TextureVariantData;
 import fr.dynamx.client.renders.scene.BaseRenderContext;
 import fr.dynamx.client.renders.scene.IRenderContext;
@@ -38,6 +39,7 @@ import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.OpenGlHelper;
 import net.minecraft.client.renderer.RenderGlobal;
 import net.minecraft.util.ResourceLocation;
+import net.minecraftforge.fml.common.FMLCommonHandler;
 import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
 import org.joml.Matrix4f;
@@ -110,24 +112,61 @@ public class PartLightSource extends SubInfoType<ILightOwner<?>> implements ISub
     }
 
     /**
+     * Les lampes contenues dans l'objet 3D de cette lumière, lues sur le modèle : position et taille de chacune.
+     * Un objet de lumière en contient souvent plusieurs (une paire de phares, les lampes des deux bouts du
+     * véhicule), chacune projetant ses propres effets. <br>
+     * Sert uniquement à placer les effets (voir fr.dynamx.client.renders.lights.DynamXLightFx), et vide si le
+     * modèle n'a pas pu être lu.
+     */
+    @Getter
+    protected List<LightFxLamp> lightFxLamps = Collections.emptyList();
+
+    /**
      * If this is a rotating light, this method reads the position and rotation from the 3D model owning this part. <br>
      * If the configured position is null, this method reads the position. <br>
      * If the configured position and rotation are null, this method also reads the rotation (only for GLTF models). <br>
      * <br>
-     * If this isn't a rotating light, we don't need to do any transform to render it, so we don't need its position and rotation.
+     * If this isn't a rotating light, we don't need to do any transform to render it, so we don't need its position and rotation. <br>
+     * Les lampes sont lues dans {@link PartLightSource#lightFxLamps} même sans transform à calculer, et côté
+     * client seulement, les effets de lumière devant savoir où elles sont.
      *
      * @param model The 3D model owning this part
      */
     public void readPositionFromModel(ResourceLocation model) {
+        // La position n'est lue que pour une lumière qui tourne sur elle-même, voir plus bas
+        boolean needsPosition = getPosition() == null && sources.stream().anyMatch(s -> s.getRotateDuration() > 0);
+        // Et les lampes uniquement côté client : les effets sont purement visuels, et les lire sur un serveur
+        // dédié analyserait tous les modèles 3D de tous les packs pour rien
+        boolean needsLamps = FMLCommonHandler.instance().getSide().isClient();
+        if (!needsPosition && !needsLamps) {
+            // Rien n'est nécessaire de ce modèle : il n'est même pas chargé
+            if (getPosition() == null) {
+                position = new Vector3f();
+            }
+            return;
+        }
+        DxModelData modelData;
+        try {
+            modelData = DynamXContext.getDxModelDataFromCache(DynamXUtils.getModelPath(getPackName(), model));
+        } catch (Exception e) {
+            // Un modèle illisible ne doit pas faire tomber tout le fichier du pack : la lumière n'aura ni effet
+            // ni position, ce que l'erreur en fin de méthode signale
+            modelData = null;
+        }
+        if (needsLamps) {
+            // Toujours relues, et vidées si le modèle manque : les lampes sont ensuite ramenées dans l'espace du
+            // propriétaire de la lumière, et garder celles d'une lecture précédente les mettrait deux fois à
+            // l'échelle
+            readLightFxLamps(modelData);
+        }
         if (getPosition() != null) {
             return;
         }
         //If the light isn't moving on itself, we don't need its position (it can be 0 0 0), but if it rotates, we need to place the rotation point correctly: we need the pos of the light
-        if (sources.stream().noneMatch(s -> s.getRotateDuration() > 0)) {
+        if (!needsPosition) {
             position = new Vector3f();
             return;
         }
-        DxModelData modelData = DynamXContext.getDxModelDataFromCache(DynamXUtils.getModelPath(getPackName(), model));
         if (modelData != null) {
             position = DynamXUtils.readPartPosition(modelData, getObjectName(), true);
             if (getRotation() == null && position != null)
@@ -137,6 +176,27 @@ public class PartLightSource extends SubInfoType<ILightOwner<?>> implements ISub
             DynamXErrorManager.addPackError(getPackName(), "position_not_found_in_model", ErrorLevel.HIGH, owner.getName(), "3D object " + getObjectName() + " for part " + getName());
         } else {
             isAutomaticPosition = true;
+        }
+    }
+
+    /**
+     * Lit les lampes de l'objet 3D de cette lumière et mesure la position de chacune sur le modèle, dont les
+     * effets déduisent le type de lumière : un gyrophare est haut et au-dessus du milieu du véhicule, un phare ou
+     * un feu est plus bas et à un bout.
+     *
+     * @see PartLightSource#lightFxLamps
+     */
+    protected void readLightFxLamps(@Nullable DxModelData modelData) {
+        if (modelData == null) {
+            lightFxLamps = Collections.emptyList();
+            return;
+        }
+        try {
+            lightFxLamps = LightFxLamp.read(modelData, getObjectName());
+            LightFxLamp.measureOnModel(modelData, lightFxLamps);
+        } catch (Exception e) {
+            // Un modèle illisible n'obtient simplement aucun effet
+            lightFxLamps = Collections.emptyList();
         }
     }
 
@@ -150,6 +210,10 @@ public class PartLightSource extends SubInfoType<ILightOwner<?>> implements ISub
             position = new Vector3f();
         } else {
             position.multLocal(((ICollisionsContainer) owner).getScaleModifier());
+        }
+        // Garde les lampes dans le même espace que la position de la part
+        for (LightFxLamp lamp : lightFxLamps) {
+            lamp.scale(((ICollisionsContainer) owner).getScaleModifier());
         }
         owner.addLightSource(this);
     }
@@ -324,10 +388,12 @@ public class PartLightSource extends SubInfoType<ILightOwner<?>> implements ISub
             }
             // Compute the texture id:
             byte texId;
+            String onVariantName = null;
             if (isOn && !onLightObject.getBlinkTextures().isEmpty()) {
                 // If on, use the on texture at this step
                 activeStep = activeStep % onLightObject.getBlinkTextures().size();
                 texId = onLightObject.getBlinkTextures().get(activeStep).getId();
+                onVariantName = onLightObject.getBlinkTextures().get(activeStep).getName();
             } else {
                 // If off, get the current object/owner variant, and check that it exists for the light. Else, use the default variant.
                 // This assumes "on" variants have variant ids strictly bigger than variants of the object/owner.
@@ -349,6 +415,16 @@ public class PartLightSource extends SubInfoType<ILightOwner<?>> implements ISub
                 float step = ((float) (ClientEventHandler.MC.getRenderViewEntity().ticksExisted % onLightObject.getRotateDuration())) / onLightObject.getRotateDuration();
                 step = step * (FastMath.PI * 2);
                 transform.rotate(step, 0, 1, 0);
+            }
+            // Enregistre la lumière pour que le halo, la lumière au sol et les faisceaux de chaque lampe soient
+            // dessinés en fin d'image. Le transform est sur le point de rotation du noeud, presque jamais là où
+            // sont les lampes : le renderer reçoit ce point et l'échelle du noeud pour placer chaque lampe.
+            // Le point n'est transmis que si la position vient du modèle 3D : le noeud dessine alors son objet
+            // en retirant sa propre translation (voir glTransformToPartPos), qu'il faut donc retirer des lampes
+            // aussi, alors qu'avec une position configurée dans le pack cela les ramènerait au milieu du modèle.
+            if (isOn) {
+                DynamXLightFx.submitFromScene(context, PartLightSource.this, onLightObject, transform,
+                        isAutomaticPosition ? position : null, scale, onVariantName);
             }
 
             GlStateManager.pushMatrix();

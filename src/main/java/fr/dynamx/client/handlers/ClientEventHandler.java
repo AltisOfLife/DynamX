@@ -10,6 +10,7 @@ import fr.dynamx.client.ClientProxy;
 import fr.dynamx.client.camera.CameraSystem;
 import fr.dynamx.client.gui.*;
 import fr.dynamx.client.renders.RenderMovableLine;
+import fr.dynamx.client.renders.lights.DynamXLightFx;
 import fr.dynamx.client.renders.model.renderer.DxModelRenderer;
 import fr.dynamx.common.DynamXContext;
 import fr.dynamx.common.DynamXMain;
@@ -37,7 +38,9 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiButton;
 import net.minecraft.client.gui.GuiMainMenu;
+import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.GuiScreenOptionsSounds;
+import net.minecraft.client.gui.GuiVideoSettings;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.RenderHelper;
 import net.minecraft.client.renderer.culling.Frustum;
@@ -157,6 +160,28 @@ public class ClientEventHandler {
         else if (event.getGui() instanceof GuiScreenOptionsSounds) {
             int i = 1 + SoundCategory.values().length;
             event.getButtonList().add(new ButtonSlider(-54393, event.getGui().width / 2 - 155 + i % 2 * 160, event.getGui().height / 6 - 12 + 24 * (i >> 1), false, "DynamX Sounds" + TextFormatting.RESET));
+        } else if (event.getGui() instanceof GuiVideoSettings) {
+            // Les options vidéo ont leur propre liste défilante : la seule place libre est la ligne du bouton
+            // de sortie, réduit à une moitié, l'autre accueillant le bouton des réglages des lumières
+            GuiScreen screen = event.getGui();
+            GuiButton done = null;
+            for (GuiButton button : event.getButtonList()) {
+                if (button.id == 200) {
+                    done = button;
+                    break;
+                }
+            }
+            if (done != null) {
+                done.width = 150;
+                done.x = screen.width / 2 + 5;
+                event.getButtonList().add(new GuiButton(-54394, screen.width / 2 - 155, done.y, 150, 20,
+                        "Lumières DynamX..."));
+            } else {
+                // Un autre mod a refait la page : plutôt que de deviner, le bouton va dans le coin, que les
+                // options vidéo n'utilisent jamais
+                event.getButtonList().add(new GuiButton(-54394, screen.width - 105, 6, 100, 20,
+                        "Lumières DynamX..."));
+            }
         }
     }
 
@@ -164,6 +189,9 @@ public class ClientEventHandler {
     public void performMainMenuAction(GuiScreenEvent.ActionPerformedEvent.Post event) {
         if (event.getGui() instanceof GuiMainMenu && event.getButton().id == -54391)
             ACsGuiApi.asyncLoadThenShowGui("LoadingErrors", GuiLoadingErrors::new);
+        else if (event.getGui() instanceof GuiVideoSettings && event.getButton().id == -54394)
+            // On en ressort comme des options vidéo elles-mêmes : en y revenant
+            MC.displayGuiScreen(new GuiLightFxSettings(event.getGui()));
         /* else if ((event.getGui() instanceof GuiWorldSelection || event.getGui() instanceof GuiMultiplayer) && event.getButton().id == -54392) {
             Minecraft.getMinecraft().displayGuiScreen(new GuiDisconnected(event.getGui(), "Improving DynamX", new TextComponentString("DynamX is collecting data about your computer (GPU, memory, OS) and crash-reports to improve the mod. \n" +
                     "You can disable this in the configuration file of DynamX (under 'config' directory)")));
@@ -367,6 +395,10 @@ public class ClientEventHandler {
         } else {
             isRenderingEntitiesWithOptifineShaders = false;
         }
+
+        // Effets des lumières allumées pendant le rendu des entités et des blocs, à faire après le rendu de
+        // toutes les entités pour que le monde les masque
+        DynamXLightFx.render((float) partialTicks);
     }
 
     /**
