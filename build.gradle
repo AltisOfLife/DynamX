@@ -70,7 +70,8 @@ dependencies {
     implementation ("net.minecraftforge:mergetool:0.2.3.3") { force = true }
 
     implementation 'com.github.stephengold:Libbulletjme:' + libbulletjme_version
-    implementation "fr.aym.acsguis:ACsGuis:1.4.2-beta"
+    //implementation "fr.aym.acsguis:ACsGuis:1.4.2-beta"
+    implementation(fg.deobf(fileTree('libs/ACsGuis-1.4.2-beta.jar')))
     implementation ":ModProtectionLib:1.5.3"
     implementation('org.spongepowered:mixin:0.8.3') {
         exclude module: 'guava'

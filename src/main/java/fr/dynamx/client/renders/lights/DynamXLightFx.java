@@ -11,7 +11,11 @@ import fr.dynamx.common.contentpack.parts.PartLightSource;
 import fr.dynamx.utils.DynamXConfig;
 import net.minecraft.block.material.Material;
 import net.minecraft.block.state.IBlockState;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.BufferBuilder;
+import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.client.renderer.block.model.IBakedModel;
+import net.minecraft.util.EnumBlockRenderType;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.OpenGlHelper;
 import net.minecraft.client.renderer.Tessellator;
@@ -36,7 +40,9 @@ import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Dessine les effets des lumières allumées : le halo des lampes, les faisceaux balayants d'un gyrophare et la
@@ -56,8 +62,11 @@ public class DynamXLightFx {
     private static final float[] BEAM_STEP_ALPHAS = {1, 0.4f, 0};
     /** Distance, en blocs, au-delà de laquelle un côté de section de faisceau ne vaut plus d'être dessiné */
     private static final float CONE_SEGMENT_DISTANCE = 6;
-    /** Décalage, en blocs, de la lumière posée sur une surface, pour éviter le z-fighting */
-    private static final float SURFACE_OFFSET = 0.02f;
+    /**
+     * Décalage, en blocs, de la lumière posée sur une surface. Le z-fighting est réglé par le polygon offset : ceci
+     * ne fait que le seconder, plus grand la lumière flotte visiblement devant le bloc.
+     */
+    private static final float SURFACE_OFFSET = 0.002f;
     private static final float MAX_BEAM_LENGTH = 30;
     private static final float MAX_POOL_RADIUS = 18;
 
@@ -496,8 +505,42 @@ public class DynamXLightFx {
     private static final byte TERRAIN_FULL = 1;
     /** Arrête la lumière sur une boîte propre (dalle, marche, barrière) : le seul cas que la table ne résout pas */
     private static final byte TERRAIN_BOX = 2;
-    /** Et le bit, en plus de ces trois états, disant que le bloc masque ce qui est derrière lui */
+    /**
+     * Annonce une boîte de bloc entier mais n'en est pas un : panneau, poteau, lampadaire de mod qui gardent la
+     * boîte par défaut. La lumière passe dans son bloc et n'est arrêtée que par les boîtes de son modèle, sans rien
+     * poser sur lui, comme pour une entité.
+     */
+    private static final byte TERRAIN_MODEL = 3;
+    /** Et le bit, en plus de ces quatre états, disant que le bloc masque ce qui est derrière lui */
     private static final byte TERRAIN_OPAQUE = 4;
+    /**
+     * Largeur, en blocs, du bord adouci de l'ombre d'un bloc à modèle. Plus étroit que celui des entités, un poteau
+     * ne faisant qu'une fraction de bloc, mais assez large pour que la grille des points de lumière ne le rate pas.
+     */
+    private static final float MODEL_SHADOW_SOFTNESS = 0.3f;
+    /** Épaisseur minimale, en blocs, d'une boîte tirée d'une face plate de modèle */
+    private static final double MODEL_MIN_THICKNESS = 1 / 16d;
+    /** Boîtes au-delà desquelles un modèle n'est plus pris que par la boîte qui l'entoure */
+    private static final int MAX_MODEL_BOXES = 48;
+    /** Blocs à modèle gardés au plus avant que la table ne soit vidée */
+    private static final int MAX_CACHED_MODELS = 4096;
+    /**
+     * Les boîtes du modèle de chaque bloc à modèle rencontré, par position, en coordonnées du bloc, six nombres
+     * par boîte. Construire le modèle peut coûter cher (certains mods le recuisent à chaque demande) : gardées tant
+     * que l'état du bloc à cette position ne change pas.
+     */
+    private static final Map<Long, ModelShape> MODEL_SHAPES = new HashMap<>();
+
+    /** Les boîtes d'un bloc à modèle, et l'état du bloc pour lequel elles ont été construites */
+    private static final class ModelShape {
+        final IBlockState state;
+        final double[] boxes;
+
+        ModelShape(IBlockState state, double[] boxes) {
+            this.state = state;
+            this.boxes = boxes;
+        }
+    }
     /** Marque de ces deux tables, incrémentée quand le terrain est supposé avoir changé et non à chaque image */
     private static int groundStamp;
     /**
@@ -537,6 +580,12 @@ public class DynamXLightFx {
     @Nullable
     private static EnumFacing blockFace;
     private static int blockX, blockY, blockZ;
+    /**
+     * Et ce que les blocs à modèle ({@link DynamXLightFx#TERRAIN_MODEL}) traversés ont laissé passer : la part de
+     * lumière gardée, adoucie sur leur bord, et la fraction du rayon où il est entré dans le premier d'entre eux
+     * (2 s'il n'en a rencontré aucun)
+     */
+    private static float traceModelVisible, traceModelAt;
     /** Positions de blocs réutilisées par les tracés et les parcours de faces */
     private static final BlockPos.MutableBlockPos TRACE_POS = new BlockPos.MutableBlockPos(),
             FACE_POS = new BlockPos.MutableBlockPos(), TERRAIN_POS = new BlockPos.MutableBlockPos();
@@ -1173,6 +1222,9 @@ public class DynamXLightFx {
                 // Première passe : la lumière posée sur les routes et les murs, en deux dégradés différents
                 beamPatchesLeft = MAX_BEAM_PATCHES;
                 if (withProjections) {
+                    // Collée aux blocs par le depth buffer plutôt que décollée d'eux, ce qui la ferait flotter
+                    GlStateManager.enablePolygonOffset();
+                    GlStateManager.doPolygonOffset(-1, -10);
                     // Les surfaces d'abord : leurs rayons disent aussi au sol s'il doit être tracé dans le monde
                     GlStateManager.bindTexture(LightFxTextures.getProfileTextureId());
                     buffer.begin(GL11.GL_QUADS, DefaultVertexFormats.POSITION_TEX_COLOR);
@@ -1205,6 +1257,8 @@ public class DynamXLightFx {
                         }
                     }
                     Tessellator.getInstance().draw();
+                    GlStateManager.doPolygonOffset(0, 0);
+                    GlStateManager.disablePolygonOffset();
                 }
 
                 // Deuxième passe : la lumière qui voyage dans l'air
@@ -1565,6 +1619,8 @@ public class DynamXLightFx {
     private static float traceBlocks(World world, double fromX, double fromY, double fromZ,
                                      double dx, double dy, double dz, double limit) {
         blockFace = null;
+        traceModelVisible = 1;
+        traceModelAt = 2;
         int x = MathHelper.floor(fromX), y = MathHelper.floor(fromY), z = MathHelper.floor(fromZ);
         int stepX = dx > 0 ? 1 : -1, stepY = dy > 0 ? 1 : -1, stepZ = dz > 0 ? 1 : -1;
         // Ce qu'un bloc coûte au rayon sur chaque axe, et ce qui lui reste avant de passer dans le bloc suivant
@@ -1583,7 +1639,10 @@ public class DynamXLightFx {
             }
             // Ce dans quoi un joueur se cognerait arrête la lumière ; l'eau et l'herbe la laissent passer
             int shape = terrain & 3;
-            if (shape != TERRAIN_CLEAR) {
+            if (shape == TERRAIN_MODEL) {
+                // Le rayon continue à travers son bloc : seul son modèle ombre, sur un bord adouci
+                traceModel(world, x, y, z, fromX, fromY, fromZ, dx, dy, dz, limit);
+            } else if (shape != TERRAIN_CLEAR) {
                 double boxMinX = x, boxMinY = y, boxMinZ = z, boxMaxX = x + 1, boxMaxY = y + 1, boxMaxZ = z + 1;
                 if (shape == TERRAIN_BOX) {
                     // Dalle, marche, barrière : le seul cas que la table ne résout pas, leur boîte dépendant des
@@ -1593,7 +1652,7 @@ public class DynamXLightFx {
                         break;
                     }
                     TRACE_POS.setPos(x, y, z);
-                    AxisAlignedBB box = state.getCollisionBoundingBox(world, TRACE_POS);
+                    AxisAlignedBB box = lightBox(world, state, TRACE_POS);
                     if (box == null) {
                         // Elle vient de perdre sa boîte : finalement rien sur le passage
                         shape = TERRAIN_CLEAR;
@@ -1643,6 +1702,207 @@ public class DynamXLightFx {
     }
 
     /**
+     * Passe un rayon à travers un bloc à modèle : note la part de lumière que ses boîtes laissent passer, avec un
+     * bord adouci comme celui d'une entité, et où le rayon entre dans la première. Un poteau d'un huitième de bloc
+     * tombe sinon entre les points de lumière, ou les fait clignoter d'un pas à l'autre.
+     */
+    private static void traceModel(World world, int x, int y, int z, double fromX, double fromY, double fromZ,
+                                   double dx, double dy, double dz, double limit) {
+        double[] boxes = modelBoxes(world, x, y, z);
+        if (boxes == null) {
+            return;
+        }
+        for (int at = 0; at < boxes.length && traceModelVisible > 0; at += 6) {
+            double minX = x + boxes[at], minY = y + boxes[at + 1], minZ = z + boxes[at + 2];
+            double maxX = x + boxes[at + 3], maxY = y + boxes[at + 4], maxZ = z + boxes[at + 5];
+            float margin = rayMarginToBounds(fromX, fromY, fromZ, dx, dy, dz, limit,
+                    minX, minY, minZ, maxX, maxY, maxZ);
+            if (margin >= MODEL_SHADOW_SOFTNESS / 2) {
+                continue;
+            }
+            float enters = rayEntersBox(minX, minY, minZ, maxX, maxY, maxZ, fromX, fromY, fromZ, dx, dy, dz);
+            if (!Float.isNaN(enters) && enters < limit) {
+                // Le rayon traverse vraiment cette boîte, aussi loin de son milieu qu'il passe
+                margin = Math.min(margin, 0);
+                traceModelAt = Math.min(traceModelAt, enters);
+            }
+            traceModelVisible = Math.min(traceModelVisible,
+                    MathHelper.clamp(0.5f + margin / MODEL_SHADOW_SOFTNESS, 0f, 1f));
+        }
+        blockFace = null;
+    }
+
+    /**
+     * Les boîtes du modèle d'un bloc à modèle, prises dans la table ou construites depuis les quads de son modèle
+     *
+     * @return Six nombres par boîte, en coordonnées du bloc, ou null si le modèle n'a rien donné
+     */
+    @Nullable
+    private static double[] modelBoxes(World world, int x, int y, int z) {
+        IBlockState state = blockAt(world, x, y, z);
+        if (state == null) {
+            return null;
+        }
+        // Même pliage que BlockPos#toLong, sans construire de position
+        Long key = ((long) x & 0x3FFFFFF) << 38 | ((long) y & 0xFFF) << 26 | ((long) z & 0x3FFFFFF);
+        ModelShape shape = MODEL_SHAPES.get(key);
+        if (shape != null && shape.state == state) {
+            return shape.boxes;
+        }
+        if (MODEL_SHAPES.size() >= MAX_CACHED_MODELS) {
+            MODEL_SHAPES.clear();
+        }
+        TERRAIN_POS.setPos(x, y, z);
+        double[] boxes = buildModelBoxes(world, state, TERRAIN_POS);
+        MODEL_SHAPES.put(key, new ModelShape(state, boxes));
+        return boxes;
+    }
+
+    /**
+     * Tire du modèle rendu d'un bloc les boîtes qui arrêtent la lumière. Les quads d'un modèle sont les faces de ses
+     * éléments : deux faces opposées d'un même élément ont la même étendue sur deux axes, et leur union est
+     * l'élément entier. Les faces restantes contenues dans une boîte trouvée en sont un autre côté ; les autres
+     * sont gardées seules, épaissies, comme le plan d'un panneau à une seule face.
+     */
+    @Nullable
+    private static double[] buildModelBoxes(World world, IBlockState state, BlockPos pos) {
+        List<BakedQuad> quads = new ArrayList<>();
+        try {
+            IBlockState actual = state.getActualState(world, pos);
+            IBakedModel model = Minecraft.getMinecraft().getBlockRendererDispatcher().getModelForState(actual);
+            IBlockState extended = actual.getBlock().getExtendedState(actual, world, pos);
+            quads.addAll(model.getQuads(extended, null, 0));
+            for (EnumFacing side : EnumFacing.VALUES) {
+                quads.addAll(model.getQuads(extended, side, 0));
+            }
+        } catch (Exception e) {
+            // Un modèle de mod qui ne se laisse pas lire hors du rendu : ce bloc ne fera pas d'ombre
+            return null;
+        }
+        int count = quads.size();
+        if (count == 0) {
+            return null;
+        }
+        double[] faces = new double[count * 6];
+        double[] all = {Double.MAX_VALUE, Double.MAX_VALUE, Double.MAX_VALUE,
+                -Double.MAX_VALUE, -Double.MAX_VALUE, -Double.MAX_VALUE};
+        for (int quad = 0; quad < count; quad++) {
+            BakedQuad baked = quads.get(quad);
+            int[] data = baked.getVertexData();
+            int stride = baked.getFormat().getIntegerSize();
+            int at = quad * 6;
+            faces[at] = faces[at + 1] = faces[at + 2] = Double.MAX_VALUE;
+            faces[at + 3] = faces[at + 4] = faces[at + 5] = -Double.MAX_VALUE;
+            for (int vertex = 0; vertex < 4 && vertex * stride + 2 < data.length; vertex++) {
+                for (int axis = 0; axis < 3; axis++) {
+                    // La position est en tête de chaque sommet, dans tous les formats de bloc
+                    double value = MathHelper.clamp(Float.intBitsToFloat(data[vertex * stride + axis]), 0, 1);
+                    faces[at + axis] = Math.min(faces[at + axis], value);
+                    faces[at + 3 + axis] = Math.max(faces[at + 3 + axis], value);
+                }
+            }
+            for (int axis = 0; axis < 3; axis++) {
+                all[axis] = Math.min(all[axis], faces[at + axis]);
+                all[axis + 3] = Math.max(all[axis + 3], faces[at + 3 + axis]);
+            }
+        }
+        boolean[] used = new boolean[count];
+        List<double[]> boxes = new ArrayList<>();
+        // Les paires de faces opposées d'un même élément
+        for (int a = 0; a < count; a++) {
+            if (used[a]) {
+                continue;
+            }
+            for (int b = a + 1; b < count; b++) {
+                if (!used[b] && opposedFaces(faces, a, b)) {
+                    used[a] = used[b] = true;
+                    double[] box = new double[6];
+                    for (int axis = 0; axis < 3; axis++) {
+                        box[axis] = Math.min(faces[a * 6 + axis], faces[b * 6 + axis]);
+                        box[axis + 3] = Math.max(faces[a * 6 + 3 + axis], faces[b * 6 + 3 + axis]);
+                    }
+                    boxes.add(box);
+                    break;
+                }
+            }
+        }
+        // Les autres côtés de ces éléments, et les faces seules
+        for (int quad = 0; quad < count; quad++) {
+            if (used[quad]) {
+                continue;
+            }
+            double[] face = new double[6];
+            System.arraycopy(faces, quad * 6, face, 0, 6);
+            boolean inside = false;
+            for (double[] box : boxes) {
+                if (contains(box, face)) {
+                    inside = true;
+                    break;
+                }
+            }
+            if (!inside) {
+                boxes.add(face);
+            }
+        }
+        // Une boîte contenue dans une autre n'ombre rien de plus
+        List<double[]> kept = new ArrayList<>();
+        for (int a = 0; a < boxes.size(); a++) {
+            boolean inside = false;
+            for (int b = 0; b < boxes.size() && !inside; b++) {
+                // Entre deux boîtes identiques, seule la première est gardée
+                inside = b != a && contains(boxes.get(b), boxes.get(a))
+                        && (b < a || !contains(boxes.get(a), boxes.get(b)));
+            }
+            if (!inside) {
+                kept.add(boxes.get(a));
+            }
+        }
+        if (kept.size() > MAX_MODEL_BOXES) {
+            // Un modèle trop détaillé pour être tracé boîte par boîte à chaque rayon
+            kept.clear();
+            kept.add(all);
+        }
+        double[] result = new double[kept.size() * 6];
+        for (int box = 0; box < kept.size(); box++) {
+            double[] bounds = kept.get(box);
+            for (int axis = 0; axis < 3; axis++) {
+                // Une face plate est épaissie autour de son plan, sans sortir du bloc
+                double thin = MODEL_MIN_THICKNESS - (bounds[axis + 3] - bounds[axis]);
+                double min = bounds[axis], max = bounds[axis + 3];
+                if (thin > 0) {
+                    min = Math.max(0, min - thin / 2);
+                    max = Math.min(1, max + thin / 2);
+                }
+                result[box * 6 + axis] = min;
+                result[box * 6 + 3 + axis] = max;
+            }
+        }
+        return result;
+    }
+
+    /** @return Vrai si ces deux faces ont la même étendue sur au moins deux axes, comme deux côtés opposés */
+    private static boolean opposedFaces(double[] faces, int a, int b) {
+        int same = 0;
+        for (int axis = 0; axis < 3; axis++) {
+            if (Math.abs(faces[a * 6 + axis] - faces[b * 6 + axis]) < 1e-3
+                    && Math.abs(faces[a * 6 + 3 + axis] - faces[b * 6 + 3 + axis]) < 1e-3) {
+                same++;
+            }
+        }
+        return same >= 2;
+    }
+
+    /** @return Vrai si la boîte inner est dans la boîte outer, à un millième de bloc près */
+    private static boolean contains(double[] outer, double[] inner) {
+        for (int axis = 0; axis < 3; axis++) {
+            if (inner[axis] < outer[axis] - 1e-3 || inner[axis + 3] > outer[axis + 3] + 1e-3) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Dit quelle part de la lumière d'une lampe atteint vraiment un point du monde, contre les blocs comme contre
      * les entités : c'est ce qui garde la lumière d'un projecteur du bon côté du mur d'où elle est projetée.
      *
@@ -1664,7 +1924,7 @@ public class DynamXLightFx {
             return 0;
         }
         return traceBlocks(world, entry.emitX, entry.emitY, entry.emitZ, dx, dy, dz, limit) >= limit
-                ? visible : 0;
+                ? visible * traceModelVisible : 0;
     }
 
     /**
@@ -1721,32 +1981,59 @@ public class DynamXLightFx {
                                         double limit) {
         double[] boxes = entry.occluders;
         int at = box * 6;
-        double towardsX = (boxes[at] + boxes[at + 3]) / 2 - entry.emitX;
-        double towardsY = (boxes[at + 1] + boxes[at + 4]) / 2 - entry.emitY;
-        double towardsZ = (boxes[at + 2] + boxes[at + 5]) / 2 - entry.emitZ;
+        return rayMarginToBounds(entry.emitX, entry.emitY, entry.emitZ, dx, dy, dz, limit,
+                boxes[at], boxes[at + 1], boxes[at + 2], boxes[at + 3], boxes[at + 4], boxes[at + 5]);
+    }
+
+    /**
+     * Mesure à quelle distance un rayon passe du bord d'une boîte, celle d'une entité ou d'un bloc à modèle
+     *
+     * @return Cette distance, en blocs, négative pour un rayon passant dans la boîte
+     */
+    private static float rayMarginToBounds(double fromX, double fromY, double fromZ, double dx, double dy,
+                                           double dz, double limit, double minX, double minY, double minZ,
+                                           double maxX, double maxY, double maxZ) {
+        double towardsX = (minX + maxX) / 2 - fromX;
+        double towardsY = (minY + maxY) / 2 - fromY;
+        double towardsZ = (minZ + maxZ) / 2 - fromZ;
         double lengthSq = dx * dx + dy * dy + dz * dz;
         // Où le long du rayon la boîte est croisée, soit la projection de son milieu sur le rayon
         double along = lengthSq < 1e-9 ? 0
                 : MathHelper.clamp((towardsX * dx + towardsY * dy + towardsZ * dz) / lengthSq, 0, limit);
-        double atX = entry.emitX + dx * along, atY = entry.emitY + dy * along, atZ = entry.emitZ + dz * along;
+        double atX = fromX + dx * along, atY = fromY + dy * along, atZ = fromZ + dz * along;
         // Et de combien ce point du rayon est hors de la boîte, axe par axe
-        double outX = Math.max(boxes[at] - atX, Math.max(0, atX - boxes[at + 3]));
-        double outY = Math.max(boxes[at + 1] - atY, Math.max(0, atY - boxes[at + 4]));
-        double outZ = Math.max(boxes[at + 2] - atZ, Math.max(0, atZ - boxes[at + 5]));
+        double outX = Math.max(minX - atX, Math.max(0, atX - maxX));
+        double outY = Math.max(minY - atY, Math.max(0, atY - maxY));
+        double outZ = Math.max(minZ - atZ, Math.max(0, atZ - maxZ));
         if (outX > 0 || outY > 0 || outZ > 0) {
             return (float) Math.sqrt(outX * outX + outY * outY + outZ * outZ);
         }
         // Dans la boîte : de combien il lui manque pour en sortir, ce qui prolonge le bord adouci à travers elle
-        double inside = Math.min(Math.min(atX - boxes[at], boxes[at + 3] - atX),
-                Math.min(Math.min(atY - boxes[at + 1], boxes[at + 4] - atY),
-                        Math.min(atZ - boxes[at + 2], boxes[at + 5] - atZ)));
+        double inside = Math.min(Math.min(atX - minX, maxX - atX),
+                Math.min(Math.min(atY - minY, maxY - atY), Math.min(atZ - minZ, maxZ - atZ)));
         return (float) -inside;
     }
 
     /** @return Vrai si le bloc à cette position est assez solide pour recevoir et arrêter la lumière d'une lampe */
     private static boolean catchesLight(World world, int x, int y, int z) {
         int terrain = terrainAt(world, x, y, z);
-        return terrain > 0 && (terrain & 3) != TERRAIN_CLEAR;
+        // Un bloc à modèle ne reçoit rien : la lumière contourne son bloc comme s'il était vide
+        return terrain > 0 && (terrain & 3) != TERRAIN_CLEAR && (terrain & 3) != TERRAIN_MODEL;
+    }
+
+    /**
+     * @return La boîte visible d'un bloc qui arrête la lumière, ou null s'il n'en arrête pas. La boîte de collision
+     * d'un mur ou d'une barrière monte à 1.5 bloc : la lumière se poserait au-dessus du bloc.
+     */
+    @Nullable
+    private static AxisAlignedBB lightBox(World world, IBlockState state, BlockPos pos) {
+        return state.getCollisionBoundingBox(world, pos) == null ? null : state.getBoundingBox(world, pos);
+    }
+
+    /** @return Vrai si le bloc à cette position est un bloc à modèle, voir {@link DynamXLightFx#TERRAIN_MODEL} */
+    private static boolean isModelBlock(World world, int x, int y, int z) {
+        int terrain = terrainAt(world, x, y, z);
+        return terrain > 0 && (terrain & 3) == TERRAIN_MODEL;
     }
 
     /**
@@ -1786,6 +2073,12 @@ public class DynamXLightFx {
                 // Exactement tout son bloc, et pas seulement aussi gros : sinon il faut demander la boîte entière
                 terrain = box.minX == 0 && box.minY == 0 && box.minZ == 0
                         && box.maxX == 1 && box.maxY == 1 && box.maxZ == 1 ? TERRAIN_FULL : TERRAIN_BOX;
+                if (terrain == TERRAIN_FULL && !state.isFullCube() && !state.isOpaqueCube()
+                        && state.getRenderType() == EnumBlockRenderType.MODEL) {
+                    // Une boîte de bloc entier sur un modèle qui n'en est pas un : panneau ou poteau d'un mod
+                    // ayant gardé la boîte par défaut. C'est son modèle qui arrête la lumière.
+                    terrain = TERRAIN_MODEL;
+                }
             }
             if (state.isOpaqueCube()) {
                 terrain |= TERRAIN_OPAQUE;
@@ -2123,6 +2416,11 @@ public class DynamXLightFx {
         // Une route dégagée : un sol plat de blocs pleins, rien dans le faisceau et rien dessus. Chaque coin porte
         // alors le même nombre, et tout cela fait un seul quad avec le dégradé dessus.
         int flatTopY = MathHelper.floor(groundLevel);
+        // Un poteau est trop fin pour que les rayons cherchant les surfaces le trouvent à coup sûr : ceux posés
+        // dans l'empreinte sont cherchés ici, à la hauteur où passe la lumière, et le sol derrière eux est tracé
+        markModelObstacles(world, entry, minX, maxX, minZ, maxZ, flatTopY,
+                Math.max(flatTopY, MathHelper.floor(entry.emitY)));
+        groundTracedFrom = entry.projectionBlockedFrom;
         if (entry.occluderCount == 0 && entry.projectionBlockedFrom == Float.MAX_VALUE
                 && groundLevel == flatTopY && flatTopY < entry.emitY) {
             int columns = flatFootprint(world, entry, flatTopY, minX, maxX, minZ, maxZ);
@@ -2205,6 +2503,32 @@ public class DynamXLightFx {
             }
         }
         return columns;
+    }
+
+    /**
+     * Cherche les blocs à modèle dressés dans l'empreinte d'un faisceau, entre le sol et la lampe, et rapproche
+     * d'eux la distance à partir de laquelle le sol est tracé : ce qui est derrière un poteau est dans son ombre
+     */
+    private static void markModelObstacles(World world, LightFxEntry entry, int minX, int maxX, int minZ,
+                                           int maxZ, int fromY, int toY) {
+        for (int blockX = minX; blockX <= maxX; blockX++) {
+            if (!footprintRow(entry, blockX, minZ, maxZ)) {
+                continue;
+            }
+            for (int blockZ = rowFromZ; blockZ <= rowToZ; blockZ++) {
+                if (!touchesFootprint(entry, blockX, blockZ)) {
+                    continue;
+                }
+                for (int y = fromY; y <= toY; y++) {
+                    if (isModelBlock(world, blockX, y, blockZ)) {
+                        float along = (float) ((blockX + 0.5 - entry.emitX) * groundAlongX
+                                + (blockZ + 0.5 - entry.emitZ) * groundAlongZ) - BLOCK_HALF_DIAGONAL;
+                        entry.projectionBlockedFrom = Math.min(entry.projectionBlockedFrom, Math.max(0, along));
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -2299,6 +2623,12 @@ public class DynamXLightFx {
                         seedLimit(Math.abs(w) * heightFar, entry.projectionWidthNear * SPOT_FLATTEN,
                                 entry.projectionWidthFar * SPOT_FLATTEN));
                 float travelled = traceBlocks(world, entry.emitX, entry.emitY, entry.emitZ, dx, dy, dz, limit);
+                if (traceModelAt < travelled) {
+                    // Passé à travers un poteau : il ne reçoit rien, mais le sol derrière lui est dans son ombre
+                    float along = (float) (traceModelAt
+                            * (dx * entry.beamX + dy * entry.beamY + dz * entry.beamZ));
+                    entry.projectionBlockedFrom = Math.min(entry.projectionBlockedFrom, Math.max(0, along));
+                }
                 if (travelled < 1 && blockFace != null
                         && addLitFace(world, entry, blockX, blockY, blockZ, blockFace, baseAlpha)) {
                     // La distance du premier obstacle dressé dans le faisceau, à partir de laquelle la lumière au
@@ -2462,11 +2792,13 @@ public class DynamXLightFx {
         FACE_KEYS[slot] = key;
         visitedFaces++;
         IBlockState state = blockAt(world, x, y, z);
-        if (state == null || state.getMaterial() == Material.AIR) {
+        if (state == null || state.getMaterial() == Material.AIR
+                || isModelBlock(world, x, y, z)) {
+            // Un bloc à modèle n'a pas les faces de sa boîte : il ombre sans rien recevoir, comme une entité
             return false;
         }
         FACE_POS.setPos(x, y, z);
-        AxisAlignedBB box = state.getCollisionBoundingBox(world, FACE_POS);
+        AxisAlignedBB box = lightBox(world, state, FACE_POS);
         if (box == null) {
             // Rien dans quoi un joueur se cognerait, sauf l'eau et la lave, qui reçoivent bien la lumière
             if (!groundMode || !state.getMaterial().isLiquid()) {
@@ -3400,11 +3732,12 @@ public class DynamXLightFx {
             if (state == null) {
                 break;
             }
-            if (state.getMaterial() == Material.AIR) {
+            if (state.getMaterial() == Material.AIR || isModelBlock(world, blockX, y, blockZ)) {
+                // Un poteau ou un panneau n'est pas un sol : la lumière tombe sur ce qui le porte
                 continue;
             }
             pos.setPos(blockX, y, blockZ);
-            AxisAlignedBB box = state.getCollisionBoundingBox(world, pos);
+            AxisAlignedBB box = lightBox(world, state, pos);
             if (box == null) {
                 // L'eau et la lave reflètent bien les lumières, mais l'herbe et les fleurs sont ignorées
                 if (state.getMaterial().isLiquid()) {
@@ -3604,6 +3937,9 @@ public class DynamXLightFx {
         GlStateManager.blendFunc(blendSrcBefore, blendDstBefore);
         GlStateManager.depthMask(GL_BEFORE[FLAG_DEPTH_WRITE]);
         GlStateManager.color(1, 1, 1, 1);
+        // Si un échec a interrompu la première passe
+        GlStateManager.doPolygonOffset(0, 0);
+        GlStateManager.disablePolygonOffset();
 
         if (GL_BEFORE[FLAG_CULL]) {
             GlStateManager.enableCull();
